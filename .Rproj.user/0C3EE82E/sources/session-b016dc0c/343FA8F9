@@ -3,7 +3,7 @@
     "path": "C:/Users/Administrator/OneDrive - Brigham Young University/1School/Stat 348/Walmart/WalmartAnalysis.R",
     "project_path": "WalmartAnalysis.R",
     "type": "r_source",
-    "hash": "2004690334",
+    "hash": "1658092346",
     "contents": "",
     "dirty": false,
     "created": 1763143850016.0,
@@ -13,15 +13,15 @@
         "tempName": "Untitled1",
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "1,0",
+        "cursorPosition": "0,20",
         "scrollLine": "0"
     },
     "folds": "",
-    "lastKnownWriteTime": 1763421538,
+    "lastKnownWriteTime": 1763421751,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1763421538088,
+    "last_content_update": 1763421751564,
     "read_only": false,
     "read_only_alternatives": []
 }
