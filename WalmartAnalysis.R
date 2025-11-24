@@ -1,11 +1,12 @@
-#Walmart Competition
+#Walmart Competition #4322
 library(tidymodels)
 library(tidyverse)
 library(vroom)
 library(embed)
 library(doParallel)
 library(themis)
-
+library(DataExplorer)
+library(prophet)
 # Parallel
 num_cores <- parallel::detectCores()
 cl <- makePSOCKcluster(num_cores - 1)
@@ -16,6 +17,12 @@ trainData <- vroom("train.csv")
 testData  <- vroom("test.csv")
 features <- vroom("features.csv")
 stores <- vroom("stores.csv")
+
+#########
+## EDA ##
+#########
+plot_missing(features)
+plot_missing(testData)
 
 # Correct joins
 trainData <- trainData %>%
@@ -44,6 +51,97 @@ testData <- testData %>%
   select(-IsHoliday.y) %>%
   mutate(IsHoliday.x = factor(IsHoliday.x))
 
+impute_rec <- recipe(~ ., data = trainData) %>%
+  step_mutate(DecDate = decimal_date(Date)) %>% 
+  step_impute_bag(
+    any_of(c("CPI", "Unemployment")),
+    impute_with = imp_vars(DecDate, Store))
+
+impute_prep <- prep(impute_rec)
+
+trainData <- bake(impute_prep, new_data = NULL)
+
+
+impute_rec <- recipe(~ ., data = testData) %>%
+  step_mutate(DecDate = decimal_date(Date)) %>% 
+  step_impute_bag(
+    any_of(c("CPI", "Unemployment")),
+    impute_with = imp_vars(DecDate, Store))
+
+impute_prep <- prep(impute_rec)
+
+testData <- bake(impute_prep, new_data = NULL)
+
+##########################################
+## Fit Prophet Model to see how it does ##
+##########################################
+
+## Choose Store and Dept
+store <- 17 # I did 17
+dept <- 17 # I used 17
+
+## Filter and Rename to match prophet syntax
+sd_train <- trainData %>%
+  filter(Store==store, Dept==dept) %>%
+  rename(y=Weekly_Sales, ds=Date)
+sd_test <- testData %>%
+  filter(Store==store, Dept==dept) %>%
+  rename(ds=Date)
+
+## Fit a prophet model
+prophet_model <- prophet() %>%
+  add_regressor("CPI") %>%
+  add_regressor("Unemployment") %>%
+  add_regressor("TotalMarkdown") %>%
+  fit.prophet(df=sd_train)
+
+## Predict Using Fitted prophet Model
+fitted_vals <- predict(prophet_model, df=sd_train) #For Plotting Fitted Values
+test_preds <- predict(prophet_model, df=sd_test) #Predictions are called "yhat"
+
+## Plot Fitted and Forecast on Same Plot
+plot1 <- ggplot() +
+  geom_line(data = sd_train, mapping = aes(x = ds, y = y, color = "Data")) +
+  geom_line(data = fitted_vals, mapping = aes(x = as.Date(ds), y = yhat, color = "Fitted")) +
+  geom_line(data = test_preds, mapping = aes(x = as.Date(ds), y = yhat, color = "Forecast")) +
+  scale_color_manual(values = c("Data" = "black", "Fitted" = "blue", "Forecast" = "red")) +
+  labs(color="")
+
+
+## Choose Store and Dept
+store <- 16 # I did 17
+dept <- 16 # I used 17
+
+## Filter and Rename to match prophet syntax
+sd_train1 <- trainData %>%
+  filter(Store==store, Dept==dept) %>%
+  rename(y=Weekly_Sales, ds=Date)
+sd_test1 <- testData %>%
+  filter(Store==store, Dept==dept) %>%
+  rename(ds=Date)
+
+## Fit a prophet model
+prophet_model1 <- prophet() %>%
+  add_regressor("CPI") %>%
+  add_regressor("Unemployment") %>%
+  add_regressor("TotalMarkdown") %>%
+  fit.prophet(df=sd_train1)
+
+## Predict Using Fitted prophet Model
+fitted_vals1 <- predict(prophet_model1, df=sd_train1) #For Plotting Fitted Values
+test_preds1 <- predict(prophet_model1, df=sd_test1) #Predictions are called "yhat"
+
+## Plot Fitted and Forecast on Same Plot
+plot2 <- ggplot() +
+  geom_line(data = sd_train1, mapping = aes(x = ds, y = y, color = "Data")) +
+  geom_line(data = fitted_vals1, mapping = aes(x = as.Date(ds), y = yhat, color = "Fitted")) +
+  geom_line(data = test_preds1, mapping = aes(x = as.Date(ds), y = yhat, color = "Forecast")) +
+  scale_color_manual(values = c("Data" = "black", "Fitted" = "blue", "Forecast" = "red")) +
+  labs(color="")
+
+library(patchwork)
+plot1 + plot2
+
 ####################################################################
 ##################### RECIPE SECTION ###############################
 ####################################################################
@@ -51,17 +149,24 @@ testData <- testData %>%
 # NOTE: some of these step functions are not appropriate to use together
 my_recipe <- recipe(Weekly_Sales ~ ., data = trainData) %>%
   step_zv(all_predictors()) %>%
+  step_mutate(DecDate = decimal_date(Date)) %>%
   update_role(Store, Dept, Date, new_role = "ID") %>%  # don't turn into predictors
   step_mutate(Store = factor(Store),
               Dept = factor(Dept)) %>%
-  step_date(Date, features = c("year","month","week","dow")) %>%
+  step_date(Date, features = c("year","week","dow")) %>%
+  step_impute_bag(any_of(c("CPI","Unemployment")), impute_with = imp_vars(DecDate, Store)) %>%
   #step_holiday(Date, holidays = timeDate::listHolidays("US")) %>%
   step_impute_median(all_numeric_predictors()) %>%
   step_dummy(all_nominal_predictors()) %>% 
   step_normalize(all_numeric_predictors())
 
+
+#imputed_features <- juice(prep(my_recipe))
+set.seed(123)
+folds <- vfold_cv(trainData, v = 2)
+
 # Choose a regression model
-rf_model <- rand_forest(trees = 10, mtry = 20, min_n = 5) %>%
+rf_model <- rand_forest(trees = tune(), mtry = tune(), min_n = tune()) %>%
   set_engine("ranger") %>%
   set_mode("regression")
 
@@ -71,15 +176,24 @@ glmnet_model <- linear_reg(penalty = 0.1, mixture = 0.5) %>%
 all_predictions <- list()
 
 groups <- testData %>% distinct(Store, Dept)
+groups_small <- groups %>% slice(1:5)
 
-for (i in 1:nrow(groups)) {
-  store_i <- groups$Store[i]
-  dept_i  <- groups$Dept[i]
+#for (i in 1:nrow(groups)) {
+  #store_i <- groups$Store[i]
+  #dept_i  <- groups$Dept[i]
+
+for (i in 1:nrow(groups_small)) {
+  store_i <- groups_small$Store[i]
+  dept_i  <- groups_small$Dept[i]
   
   #message("Processing Store ", store_i, " Dept ", dept_i)
   
   train_subset <- trainData %>% filter(Store == store_i, Dept == dept_i)
   test_subset  <- testData  %>% filter(Store == store_i, Dept == dept_i)
+  
+  which_na <- sapply(train_subset, function(x) sum(is.na(x)))
+  print(paste("Store:", store_i, "Dept:", dept_i))
+  print(which_na[which_na > 0])
   
   n_train <- nrow(train_subset)
   
@@ -101,10 +215,30 @@ for (i in 1:nrow(groups)) {
     wf <- workflow() %>%
       add_recipe(my_recipe) %>%
       add_model(rf_model)
+    grid <- grid_regular(
+      mtry(range = c(5, 20)),
+      trees(range = c(10, 40)),
+      min_n(range = c(2, 10)),
+      levels = 4)
+    set.seed(123)
+    tuned_results <- tune_grid(
+      wf,
+      resamples = vfold_cv(train_subset, v = 3),
+      grid = grid,
+      metrics = metric_set(rmse))
     
-    fit_big <- fit(wf, data = train_subset)
-    preds <- predict(fit_big, new_data = test_subset)
-  }
+    best_params <- select_best(tuned_results, metric = "rmse")
+    
+    final_wf <- finalize_workflow(wf, best_params)
+    
+    fit_big <- fit(final_wf, data = train_subset)
+    
+    preds <- predict(fit_big, new_data = test_subset)}
+  
+    
+    #fit_big <- fit(wf, data = train_subset)
+    #preds <- predict(fit_big, new_data = test_subset)
+  #add bracket back?
   
   # Store predictions with ID
   preds <- test_subset %>%
@@ -112,8 +246,7 @@ for (i in 1:nrow(groups)) {
     bind_cols(preds) %>%
     select(Id, Weekly_Sales = .pred)
   
-  all_predictions[[i]] <- preds
-}
+  all_predictions[[i]] <- preds}
 
 submission <- bind_rows(all_predictions)
 
